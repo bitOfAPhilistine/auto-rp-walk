@@ -1,5 +1,7 @@
 from internal.profiler import profiler
 from internal.vector2 import Vector2
+from internal.transform2D import Transform2D
+from internal.timer import Timer
 from pythonosc import udp_client
 import tkinter as tk
 import config, openvr, math, time
@@ -7,80 +9,16 @@ import config, openvr, math, time
 
 running = True
 state: function = None
+initState = False
 ovr: openvr.IVRSystem = None
 
 hipTrackerIndex = None
-
-
-class transform2D:
-    # Rotation will be stored in radians, -pi to pi
-    @profiler
-    def __init__(self, position: Vector2 = Vector2(0, 0), rotation: float = 0.0):
-        self.position = position
-        self.rotation = rotation
-
-    # Returns the squared distance between this transform and another transform, counting 180 degree rotation as 1 meter of distance
-    @profiler
-    def sq_distance(self, other: "transform2D") -> float:
-        rotDist = abs(self.rotation - other.rotation) / math.pi
-        if rotDist > 1.0:
-            rotDist = 2.0 - rotDist
-        
-        return self.position.sq_distance(other.position) + rotDist ** 2
-
-    @profiler
-    def distance(self, other: "transform2D") -> float:
-        return math.sqrt(self.sq_distance(other))
-
-class path2D(list):
-    @profiler
-    def __init__(self, points: list[transform2D] = []):
-        self.points = points
-
-    # Allow using a float for the index, which will interpolate between points
-    @profiler
-    def __getitem__(self, index: float) -> transform2D:
-        if isinstance(index, int):
-            return self.points[index % len(self.points)]
-        
-        lowerIndex = int(math.floor(index)) % len(self.points)
-        upperIndex = int(math.ceil(index)) % len(self.points)
-
-        if lowerIndex == upperIndex:
-            return self.points[lowerIndex]
-
-        lowerPoint = self.points[lowerIndex]
-        upperPoint = self.points[upperIndex]
-
-        t = index - lowerIndex
-
-        interpPosition = lowerPoint.position * (1 - t) + upperPoint.position * t
-        interpRotation = lowerPoint.rotation * (1 - t) + upperPoint.rotation * t
-
-        return transform2D(interpPosition, interpRotation)
-
-    @profiler
-    def find_closest_point(self, point: transform2D) -> float:
-        closestIndex = 0
-        closestDistance = float('inf')
-
-        for i, p in enumerate(self.points):
-            edgeVector = self[i + 1].position - p.position
-            t = max(0, min(1, ((point.position - p.position) * edgeVector) / (edgeVector * edgeVector))) if edgeVector != Vector2(0, 0) else 0
-
-            edgeClosestIndex = i + t
-            edgeClosestDist = point.sq_distance(self[edgeClosestIndex])
-
-            if edgeClosestDist < closestDistance:
-                closestIndex = edgeClosestIndex
-                closestDistance = edgeClosestDist
-        
-        return closestIndex
+offset: Transform2D = None
 
 
 # Need to get the transform of a device in 2D space, with rotation being the yaw angle
 @profiler
-def getDeviceTransform(ovr: openvr.IVRSystem, index: int) -> transform2D:
+def getDeviceTransform(index: int) -> Transform2D:
     pose = ovr.getDeviceToAbsoluteTrackingPose(openvr.TrackingUniverseStanding, 0, openvr.k_unMaxTrackedDeviceCount)[index]
 
     if not pose.bPoseIsValid:
@@ -88,7 +26,7 @@ def getDeviceTransform(ovr: openvr.IVRSystem, index: int) -> transform2D:
 
     matrix = pose.mDeviceToAbsoluteTracking
 
-    return transform2D(Vector2(matrix[0][3], matrix[2][3]), math.atan2(matrix[1][0], matrix[0][0]))
+    return Transform2D(Vector2(matrix[0][3], matrix[2][3]), math.atan2(matrix[1][0], matrix[0][0]))
 
 
 # Initialize the main window
@@ -115,12 +53,14 @@ root.protocol("WM_DELETE_WINDOW", on_close)
 def setState(newState: function):
     global state
     state = newState
+    initState = True
     print(f"State set to {state.__qualname__ if state != None else None}")
 
 def setStateButton(newState: function) -> function:
     def inner():
         global state
         state = newState
+        initState = True
         print(f"State set to {state.__qualname__}")
     return inner
 
@@ -154,7 +94,40 @@ findHipTrackerButton = tk.Button(
 findHipTrackerButton.place(anchor="sw", relx=0, rely=1, relheight=1/8, relwidth=1/3)
 
 def calibrateOffset(dt: float):
-    pass
+    global offset
+
+    global lastOffset
+    global avgOffset
+    global calibrateOffsetTimer
+    lastOffset: Transform2D
+    avgOffset: Transform2D
+    calibrateOffsetTimer: Timer
+
+    headTransform = getDeviceTransform(0)
+    hipTransform = getDeviceTransform(hipTrackerIndex)
+
+    currentOffset = Transform2D(hipTransform.position - headTransform.position, hipTransform.rotation - headTransform.rotation)
+
+    if initState:
+        lastOffset = currentOffset.copy()
+        avgOffset = currentOffset.copy()
+        calibrateOffsetTimer = Timer(1)
+
+        initState = False
+
+    if lastOffset.sq_distance(currentOffset) >= config.DIST_THRES ** 2:
+        canvas.itemconfig(alert, text="Please hold still")
+        calibrateOffsetTimer.restart()
+        avgOffset = currentOffset.copy()
+    elif calibrateOffsetTimer.done():
+        offset = avgOffset
+        setState(None)
+    else:
+        progress = calibrateOffsetTimer.progress()
+        avgOffset.position = avgOffset.position * progress + currentOffset.position * (1 - progress)
+        avgOffset.rotation = avgOffset.rotation * progress + currentOffset.rotation * (1 - progress)
+
+    lastOffset = currentOffset
 
 calibrateOffsetButton = tk.Button(
     root,
