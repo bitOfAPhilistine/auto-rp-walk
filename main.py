@@ -9,7 +9,7 @@ running = True
 state: function = None
 ovr: openvr.IVRSystem = None
 
-hipTrackerSerial = None
+hipTrackerIndex = None
 
 
 class transform2D:
@@ -138,11 +138,13 @@ def findHipTracker(dt: float):
         canvas.itemconfig(alert, text="Enable only the hip tracker")
         return
 
-    global hipTrackerSerial
+    global hipTrackerIndex
+    hipTrackerIndex = tracker
     hipTrackerSerial = ovr.getStringTrackedDeviceProperty(tracker, openvr.Prop_SerialNumber_String)
     print(f"Hip tracker identified as {hipTrackerSerial}")
     with open("hip-tracker-serial-number.txt", "w") as f:
         f.write(hipTrackerSerial)
+    setState(None)
 
 findHipTrackerButton = tk.Button(
     root,
@@ -191,6 +193,20 @@ if __name__ == "__main__":
                 canvas.itemconfig(alert, text="SteamVR not found")
                 if state != None:
                     setState(None)
+                ovr = None
+        elif hipTrackerIndex == None:
+            try:
+                with open("hip-tracker-serial-number.txt", "r") as f:
+                    hipTrackerSerial = f.read()
+                    for i in range(openvr.k_unMaxTrackedDeviceCount):
+                        if ovr.getTrackedDeviceClass(i) == openvr.TrackedDeviceClass_GenericTracker and hipTrackerSerial == ovr.getStringTrackedDeviceProperty(i, openvr.Prop_SerialNumber_String):
+                            hipTrackerIndex = i
+                            break
+                    
+            except FileNotFoundError:
+                if state != findHipTracker:
+                    setState(findHipTracker)
+                hipTrackerIndex = -1
 
         startTime = time.time()
 
