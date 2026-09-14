@@ -10,6 +10,10 @@ class Transform2D:
         self.position = position
         self.rotation = rotation
 
+    @profiler
+    def __repr__(self):
+        return f"Transform2D({self.position}, {self.rotation})"
+
     # Returns the squared distance between this transform and another transform, counting 180 degree rotation as 1 meter of distance
     @profiler
     def sq_distance(self, other: "Transform2D") -> float:

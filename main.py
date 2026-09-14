@@ -43,6 +43,11 @@ alert = canvas.create_text(
     fill="white", anchor="center", font=("Ubuntu", 40), justify="center", width=config.CANVAS_WIDTH / 2
 )
 
+class Indicator:
+    def __init__(self, transform: Transform2D, scale: float, canvasBounds: tuple[Vector2, Vector2]):
+        self.transform = transform
+        self.scale = scale
+        self.canvasBounds = canvasBounds
 
 def on_close():
     global running
@@ -51,19 +56,20 @@ def on_close():
 root.protocol("WM_DELETE_WINDOW", on_close)
 
 def setState(newState: function):
-    global state
+    global state, initState
     state = newState
     initState = True
     print(f"State set to {state.__qualname__ if state != None else None}")
 
 def setStateButton(newState: function) -> function:
     def inner():
-        global state
+        global state, initState
         state = newState
         initState = True
         print(f"State set to {state.__qualname__}")
     return inner
 
+@profiler
 def findHipTracker(dt: float):
     tracker = None
     for i in range(openvr.k_unMaxTrackedDeviceCount):
@@ -93,18 +99,23 @@ findHipTrackerButton = tk.Button(
 )
 findHipTrackerButton.place(anchor="sw", relx=0, rely=1, relheight=1/8, relwidth=1/3)
 
-def calibrateOffset(dt: float):
-    global offset
+lastOffset: Transform2D
+avgOffset: Transform2D
+calibrateOffsetTimer: Timer
 
-    global lastOffset
-    global avgOffset
-    global calibrateOffsetTimer
-    lastOffset: Transform2D
-    avgOffset: Transform2D
-    calibrateOffsetTimer: Timer
+@profiler
+def calibrateOffset(dt: float):
+    global initState, offset, lastOffset, avgOffset, calibrateOffsetTimer
 
     headTransform = getDeviceTransform(0)
     hipTransform = getDeviceTransform(hipTrackerIndex)
+
+    if headTransform == None:
+        print("Error: head transform is none!")
+        return
+    elif hipTransform == None:
+        print("Error: hip transform is none!")
+        return
 
     currentOffset = Transform2D(hipTransform.position - headTransform.position, hipTransform.rotation - headTransform.rotation)
 
@@ -119,13 +130,18 @@ def calibrateOffset(dt: float):
         canvas.itemconfig(alert, text="Please hold still")
         calibrateOffsetTimer.restart()
         avgOffset = currentOffset.copy()
+        print("Too much movement, calibration restarted")
     elif calibrateOffsetTimer.done():
         offset = avgOffset
         setState(None)
+        print(f"Calibration complete, set to {offset}")
     else:
+        canvas.itemconfig(alert, text="Calibrating...")
         progress = calibrateOffsetTimer.progress()
         avgOffset.position = avgOffset.position * progress + currentOffset.position * (1 - progress)
         avgOffset.rotation = avgOffset.rotation * progress + currentOffset.rotation * (1 - progress)
+        print(f"Current Offset: {currentOffset}")
+        print(f"Average Offset: {avgOffset}")
 
     lastOffset = currentOffset
 
@@ -136,6 +152,7 @@ calibrateOffsetButton = tk.Button(
 )
 calibrateOffsetButton.place(anchor="s", relx=0.5, rely=1, relheight=1/8, relwidth=1/3)
 
+@profiler
 def activeNoPath(dt: float):
     pass
 
@@ -146,6 +163,7 @@ activateButton = tk.Button(
 )
 activateButton.place(anchor="se", relx=1, rely=1, relheight=1/8, relwidth=1/3)
 
+@profiler
 def activeWithPath(dt: float):
     pass
 
@@ -162,6 +180,7 @@ if __name__ == "__main__":
         if ovr == None:
             try:
                 ovr = openvr.init(openvr.VRApplication_Background)
+                print("OpenVR initialized")
             except openvr.error_code.InitError_Init_NoServerForBackgroundApp:
                 canvas.itemconfig(alert, text="SteamVR not found")
                 if state != None:
@@ -174,17 +193,24 @@ if __name__ == "__main__":
                     for i in range(openvr.k_unMaxTrackedDeviceCount):
                         if ovr.getTrackedDeviceClass(i) == openvr.TrackedDeviceClass_GenericTracker and hipTrackerSerial == ovr.getStringTrackedDeviceProperty(i, openvr.Prop_SerialNumber_String):
                             hipTrackerIndex = i
+                            print(f"Hip tracker identified at index {i}, serial {hipTrackerSerial}")
                             break
-                    
-            except FileNotFoundError:
-                if state != findHipTracker:
-                    setState(findHipTracker)
+                    if hipTrackerIndex == None:
+                        canvas.itemconfig(alert, text="Enable your hip tracker, or identify it if it is already on")
+            except:
+                print("hip-tracker-serial-number.txt not found or invalid")
+                setState(findHipTracker)
                 hipTrackerIndex = -1
+        elif offset == None:
+            canvas.itemconfig(alert, text="Hip offset not set, please calibrate")
 
         startTime = time.time()
 
         if state != None:
             state(dt)
+
+        if offset != None:
+            print(offset)
 
         try:
             root.update()
